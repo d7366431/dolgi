@@ -403,7 +403,8 @@ async function sbRest(method, query, body, prefer) {
   const t = await token();
   const r = await fetch(SB + '/rest/v1/app_state' + (query || ''), { method, headers: Object.assign({ apikey: SBK, Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }, prefer ? { Prefer: prefer } : {}), body: body ? JSON.stringify(body) : undefined });
   if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
-  return r.status === 204 ? null : r.json();
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
 }
 async function pullRemote() {
   const rows = await sbRest('GET', '?select=payload,updated_at&user_id=eq.' + session.user.id);
@@ -447,7 +448,7 @@ function syncText() {
     case 'ok': return 'Синхронизировано ' + (sync.at ? sync.at.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '');
     case 'syncing': return 'Синхронизация…';
     case 'offline': return 'Нет связи — изменения сохранены на устройстве';
-    case 'error': return 'Не удалось синхронизировать — данные сохранены на устройстве';
+    case 'error': return 'Не удалось синхронизировать — данные сохранены на устройстве' + (sync.msg ? ' (' + sync.msg + ')' : '');
     case 'login': case 'unlock': return 'Нужен вход';
     default: return cloudConfigured ? 'Только на этом устройстве' : 'Только на этом устройстве (облако не настроено)';
   }
