@@ -1,2 +1,2 @@
-{ "name": "План погашения долгов", "short_name": "Долги", "start_url": "./", "scope": "./", "display": "standalone", "background_color": "#E9EEF1", "theme_color": "#0F7A62", "lang": "ru",
+{ "name": "Мои финансы", "short_name": "Финансы", "start_url": "./", "scope": "./", "display": "standalone", "background_color": "#E9EEF1", "theme_color": "#0F7A62", "lang": "ru",
   "icons": [ { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }, { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }, { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" } ] }
