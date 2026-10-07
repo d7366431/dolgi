@@ -147,6 +147,18 @@ details.card summary{font-weight:600;color:var(--ink);font-size:16px;padding:0}
 .ev-row{display:flex;gap:8px;align-items:center}
 .ev-row input[type=month]{flex:1;min-width:0;min-height:40px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 8px;font-size:15px}
 .back{margin:0 0 8px}
+.fx-row{display:grid;grid-template-columns:minmax(0,1fr) 96px 52px 34px;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.fx-row input,.ev-row input,.ev-row select{min-width:0;width:100%!important}
+.ev-row{display:grid!important;grid-template-columns:minmax(0,1fr) 52px 96px 34px;gap:8px;align-items:center}
+.ev input.grow-in{width:100%!important}
+.mon-in{min-height:40px;padding:6px 8px;font-size:15px}
+.fx-row .btn.tiny,.ev-row .btn.tiny{min-width:34px;padding:0;justify-content:center}
+dialog{position:fixed}
+.dlg-body{position:relative}
+.dlg-x{position:absolute;top:10px;right:10px;width:36px;height:36px;border-radius:50%;border:0;background:var(--surface-2);color:var(--ink-2);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2}
+.dlg-body h3{padding-right:44px}
+.small-btn{font-size:14px;color:var(--ink-2)}
+.dlg-foot .small-btn{flex-basis:100%}
 .sync{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-3)}
 .sync i{width:9px;height:9px;border-radius:50%;background:var(--ink-3);display:inline-block}
 .sync.on i{background:var(--accent)}.sync.err i{background:var(--danger)}

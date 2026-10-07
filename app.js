@@ -604,9 +604,10 @@ function makeBaseline() {
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), 2400); }
 const dlg = $('#dlg');
 function openDialog(html, foot, onSubmit, onMount) {
-  $('#dlgBody').innerHTML = html; $('#dlgFoot').innerHTML = foot;
+  $('#dlgBody').innerHTML = '<button type="button" class="dlg-x" aria-label="Закрыть окно" data-dlg-close>✕</button>' + html; $('#dlgFoot').innerHTML = foot;
   dlg._submit = onSubmit; dlg.showModal(); if (onMount) onMount($('#dlgBody'));
 }
+dlg.addEventListener('click', (e) => { if (e.target === dlg || e.target.closest('[data-dlg-close]')) dlg.close(); });
 $('#dlgForm').addEventListener('submit', (e) => {
   const btn = e.submitter; if (!btn || btn.value === 'cancel') return;
   if (dlg._submit) { const ok = dlg._submit(btn.value, $('#dlgBody')); if (ok === false) e.preventDefault(); }
@@ -1656,11 +1657,11 @@ function debtOpen(id) {
     <div class="kv"><div><span class="label">Остаток</span><b>${fmt(d.balance)}</b></div><div><span class="label">Ставка</span><b>${fmtN0(d.rate || 0)}%</b></div><div><span class="label">Платёж</span><b>${esc(payRule(d))}</b></div><div><span class="label">Срок платежа</span><b>${d.dueDay || '—'}-го${d.payDay && +d.payDay !== +d.dueDay ? `, плачу ${d.payDay}-го` : ''}</b></div><div><span class="label">Закроется</span><b>${F.payoffBy[id] ? mName(F.payoffBy[id]) : '—'}</b></div><div><span class="label">Остаток на дату</span><b>${dText(d.balanceDate)}</b></div></div>
     ${d.note ? `<p class="sub" style="margin:0">${esc(d.note)}</p>` : ''}
     <div><b>Платежи</b>${ps.length ? ps.map(p => `<div class="li"><span class="grow small">${dText(p.date)}${p.extra ? ' · досрочно' : ''}</span><span class="num small">${fmtN(p.amount)}</span><button class="btn tiny ghost danger" type="button" data-act="del-pay" data-id="${p.id}">✕</button></div>`).join('') : '<p class="sub" style="margin:4px 0 0">Пока нет.</p>'}</div>`,
-    `<button class="btn ghost" value="close-debt">Закрыть кредит</button><button class="btn" value="edit">Изменить</button><button class="btn primary" value="pay">Внести платёж</button>`, (v) => {
+    `<button class="btn" value="edit">Изменить</button><button class="btn primary" value="pay">Внести платёж</button><button class="btn ghost small-btn" value="close-debt">Кредит погашен — убрать из плана</button>`, (v) => {
       setTimeout(() => {
         if (v === 'pay') payDialog(id, '', false);
         if (v === 'edit') debtDialog(d);
-        if (v === 'close-debt') openDialog(`<h3>Закрыть «${esc(d.name)}»?</h3><p class="sub" style="margin:0">Кредит перестанет участвовать в плане. Вернуть можно в любой момент.</p>`, `<button class="btn ghost" value="cancel">Отмена</button><button class="btn primary" value="ok">Закрыть</button>`, () => { d.status = 'closed'; d.closedAt = todayISO(); recordHistory(); persistNow(); renderAll(); toast('Кредит закрыт'); });
+        if (v === 'close-debt') openDialog(`<h3>«${esc(d.name)}» погашен?</h3><p class="sub" style="margin:0">Используйте это, когда кредит полностью выплачен или договор закрыт в банке. Он уйдёт в «Закрытые» и перестанет участвовать в плане.${+d.balance > 0 ? ` Сейчас по нему ещё числится ${fmt(d.balance)} — если это ошибка, лучше внесите платёж или поправьте остаток через «Изменить».` : ''} Вернуть можно в любой момент.</p>`, `<button class="btn ghost" value="cancel">Отмена</button><button class="btn primary" value="ok">Да, убрать из плана</button>`, () => { d.status = 'closed'; d.closedAt = todayISO(); recordHistory(); persistNow(); renderAll(); toast('Кредит закрыт'); });
       }, 50);
     });
 }
@@ -1678,16 +1679,21 @@ function viewMore() {
   if (moreView === 'salary') { el.innerHTML = back + salaryHTML(); bindSalaryChart(); }
   if (moreView === 'settings') el.innerHTML = back + settingsHTML();
 }
+function monthOptions(sel) {
+  const out = []; for (let k = -6; k <= 24; k++) { const m = ENG.addM(curMonth(), k); out.push(`<option value="${m}" ${m === sel ? 'selected' : ''}>${MS[ENG.parseM(m).m - 1]} ${ENG.parseM(m).y}</option>`); }
+  if (sel && !out.some(o => o.includes(`"${sel}"`))) out.unshift(`<option value="${sel}" selected>${MS[ENG.parseM(sel).m - 1]} ${ENG.parseM(sel).y}</option>`);
+  return out.join('');
+}
 function budgetHTML() {
   const total = S.limits.reduce((a, l) => a + (+l.month || 0), 0);
   return `<section class="card"><div class="row-between"><h2>Лимиты на жизнь</h2><span class="label">${fmtN(total)} ₽ в месяц · ${fmtN(total * weekShare)} ₽ в неделю</span></div>
     ${S.limits.map((l, i) => `<div class="li"><span class="dot" style="background:${LIMIT_COLORS[i % LIMIT_COLORS.length]}"></span><span class="grow">${esc(l.name)}<span class="small muted">${fmtN(l.month * weekShare)} ₽ в неделю</span></span><input class="num-in" type="text" inputmode="decimal" data-lim="${l.id}" value="${esc(fmtN0(l.month))}"></div>`).join('')}
     <p class="hint">Сумма лимитов — это «расходы на жизнь» в плане погашения.</p></section>
     <section class="card"><div class="row-between"><h2>Постоянные расходы</h2><button class="btn tiny" type="button" data-act="add-fixed">+ Добавить</button></div>
-    ${S.fixed.map(f => `<div class="li" data-fixed="${f.id}"><input type="text" data-f="name" value="${esc(f.name)}" class="grow-in"><input class="num-in" type="text" inputmode="decimal" data-f="amount" value="${esc(fmtN0(f.amount))}"><input class="day-in" type="number" min="1" max="31" data-f="day" value="${esc(f.day || 1)}" aria-label="число"><button class="btn tiny ghost danger" type="button" data-act="del-fixed" data-id="${f.id}">✕</button></div>`).join('')}
+    ${S.fixed.map(f => `<div class="fx-row" data-fixed="${f.id}"><input type="text" data-f="name" value="${esc(f.name)}" class="grow-in"><input class="num-in" type="text" inputmode="decimal" data-f="amount" value="${esc(fmtN0(f.amount))}"><input class="day-in" type="number" min="1" max="31" data-f="day" value="${esc(f.day || 1)}" aria-label="число"><button class="btn tiny ghost danger" type="button" data-act="del-fixed" data-id="${f.id}">✕</button></div>`).join('')}
     <p class="hint">Сумма и число месяца, когда списывается.</p></section>
     <section class="card"><div class="row-between"><h2>Разовые траты и поступления</h2><button class="btn tiny" type="button" data-act="add-ev">+ Добавить</button></div>
-    ${S.events.slice().sort((a, b) => (a.month + String(a.day || 1).padStart(2, '0')) < (b.month + String(b.day || 1).padStart(2, '0')) ? -1 : 1).map(e => `<div class="ev" data-ev="${e.id}"><input type="text" data-e="note" value="${esc(e.note || '')}" placeholder="Что это" class="grow-in"><div class="ev-row"><input type="month" data-e="month" value="${esc(e.month)}"><input class="day-in" type="number" min="1" max="31" data-e="day" value="${esc(e.day || 1)}" aria-label="число"><input class="num-in" type="text" inputmode="decimal" data-e="amount" value="${esc(fmtN0(e.amount))}"><button class="btn tiny ghost danger" type="button" data-act="del-ev" data-id="${e.id}">✕</button></div></div>`).join('') || '<p class="sub">Нет.</p>'}
+    ${S.events.slice().sort((a, b) => (a.month + String(a.day || 1).padStart(2, '0')) < (b.month + String(b.day || 1).padStart(2, '0')) ? -1 : 1).map(e => `<div class="ev" data-ev="${e.id}"><input type="text" data-e="note" value="${esc(e.note || '')}" placeholder="Что это" class="grow-in"><div class="ev-row"><select data-e="month" class="mon-in">${monthOptions(e.month)}</select><input class="day-in" type="number" min="1" max="31" data-e="day" value="${esc(e.day || 1)}" aria-label="число"><input class="num-in" type="text" inputmode="decimal" data-e="amount" value="${esc(fmtN0(e.amount))}"><button class="btn tiny ghost danger" type="button" data-act="del-ev" data-id="${e.id}">✕</button></div></div>`).join('') || '<p class="sub">Нет.</p>'}
     <p class="hint">Траты — со знаком минус, поступления (например, налоговый вычет) — с плюсом.</p></section>`;
 }
 const SAL_PARTS2 = [['sal', 'Оклад с северными', '#3B5BA5'], ['hou', 'Жильё', '#2A8FB8'], ['trip', 'Командировки', '#8C6A43'], ['vac', 'Отпускные', '#7A4FA0'], ['sick', 'Больничный', '#C0563A'], ['bon', 'Премии', '#0F7A62'], ['oth', 'Прочее', '#6B8E23']];
