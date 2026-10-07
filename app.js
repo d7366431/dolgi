@@ -926,6 +926,9 @@ function payDialog(id, amount, isExtra, date) {
     let principal = g('principal').value.trim() === '' ? estPrincipal(d, amt, g('date').value) : parseNum(g('principal').value);
     principal = Math.max(0, Math.min(principal, +d.balance || 0));
     const before = +d.balance || 0;
+    const pd = g('date').value || todayISO();
+    const twin = S.payments.find(p => p.debtId === d.id && Math.abs(p.amount - amt) < 1 && Math.abs(new Date(p.date) - new Date(pd)) <= 3 * 864e5);
+    if (twin && !b.dataset.ok) { b.dataset.ok = '1'; $('#payHint').innerHTML = `<b class="neg">Такой платёж уже внесён ${dText(twin.date)}.</b> Если это другой платёж, нажмите «Сохранить платёж» ещё раз.`; return false; }
     S.payments.push({ id: uid(), debtId: d.id, date: g('date').value || todayISO(), amount: amt, principal: Math.round(principal * 100) / 100, extra: g('extra').checked, note: g('note').value.trim() });
     d.balance = Math.max(0, Math.round((before - principal) * 100) / 100);
     d.balanceDate = g('date').value || todayISO();
@@ -937,7 +940,7 @@ function payDialog(id, amount, isExtra, date) {
     recordHistory(); persistNow(); renderAll(); toast(msg);
   }, (b) => {
     const g = (n) => b.querySelector(`[name="${n}"]`);
-    const upd = () => { const d = debtById(g('debt').value); const amt = parseNum(g('amount').value); const p = estPrincipal(d, amt, g('date').value); g('principal').placeholder = amt ? fmtN0(Math.round(p)) : ''; $('#payHint').textContent = d ? `Остаток сейчас ${fmt(d.balance)} на ${dText(d.balanceDate)}. После платежа ≈ ${fmt(Math.max(0, d.balance - (g('principal').value.trim() ? parseNum(g('principal').value) : p)))}.${d.kind === 'annuity' && S.settings.prepayMode === 'payment' ? ' При досрочном погашении ежемесячный платёж пересчитается пропорционально — сверьте его с банком.' : ''}` : ''; };
+    const upd = () => { delete b.dataset.ok; const d = debtById(g('debt').value); const amt = parseNum(g('amount').value); const p = estPrincipal(d, amt, g('date').value); g('principal').placeholder = amt ? fmtN0(Math.round(p)) : ''; $('#payHint').textContent = d ? `Остаток сейчас ${fmt(d.balance)} на ${dText(d.balanceDate)}. После платежа ≈ ${fmt(Math.max(0, d.balance - (g('principal').value.trim() ? parseNum(g('principal').value) : p)))}.${d.kind === 'annuity' && S.settings.prepayMode === 'payment' ? ' При досрочном погашении ежемесячный платёж пересчитается пропорционально — сверьте его с банком.' : ''}` : ''; };
     ['debt', 'amount', 'date', 'principal'].forEach(n => g(n).addEventListener('input', upd)); upd();
   });
 }
@@ -1125,7 +1128,7 @@ async function importStatement(file) {
       const c = (n) => +b.querySelector(`[name=c_${n}]`).value;
       const src = b.querySelector('[name=src]').value.trim() || 'Выписка';
       if (c('date') < 0 || c('desc') < 0 || (c('amount') < 0 && c('out') < 0)) { $('#impErr2').textContent = 'Укажите хотя бы дату, сумму и описание.'; return false; }
-      const have = new Set(S.tx.map(t => t.id)); let added = 0, skipped = 0;
+      const have = seenIds(), taken = new Set(), st = { added: 0, skipped: 0, replaced: 0 }; let added = 0, skipped = 0;
       for (const r of rows.slice(hi + 1)) {
         const d = toISODate(r[c('date')]); if (!d) continue;
         if (c('status') >= 0 && /fail|отклон|отмен/i.test(String(r[c('status')]))) { skipped++; continue; }
@@ -1133,11 +1136,9 @@ async function importStatement(file) {
         if (!a) continue;
         const desc = String(r[c('desc')] || '').trim(); const bcat = c('cat') >= 0 ? String(r[c('cat')] || '').trim() : '';
         const id = (d + '|' + a.toFixed(2) + '|' + desc + '|' + src).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
-        if (have.has(id)) { skipped++; continue; }
-        const t = { id, d, a: Math.round(a * 100) / 100, desc, bcat, src }; t.cat = catOf(t).cat;
-        S.tx.push(t); have.add(id); added++;
+        addStatementTx({ id, d, a: Math.round(a * 100) / 100, desc, bcat, src }, have, taken, st);
       }
-      afterTxImport(); persistNow(); renderAll(); toast(`Добавлено операций: ${added}${skipped ? `, пропущено: ${skipped}` : ''}`);
+      added = st.added; skipped += st.skipped; recategorizeAll(); afterTxImport(); persistNow(); renderAll(); toast(`Добавлено операций: ${added}${skipped ? `, пропущено: ${skipped}` : ''}${st.replaced ? `, заменено ручных: ${st.replaced}` : ''}`);
     });
 }
 
@@ -1193,9 +1194,36 @@ function afterTxImport() {
     const [d, src] = k.split('|'); const id = hash36(d + '|invest|' + src);
     const ex = keep.find(x => x.id === id);
     const sum = list.reduce((a, t) => a + t.a, 0);
-    if (ex) ex.a = Math.round((ex.a + sum) * 100) / 100; else keep.push({ id, d, a: Math.round(sum * 100) / 100, desc: `Инвесткопилка (${list.length})`, src, cat: 'Сбережения', agg: true });
+    const fresh = list.filter(t => !(ex && (ex.parts || []).includes(t.id)));
+    const add = fresh.reduce((a, t) => a + t.a, 0);
+    if (ex) { ex.a = Math.round((ex.a + add) * 100) / 100; ex.parts = (ex.parts || []).concat(fresh.map(t => t.id)); ex.desc = `Инвесткопилка (${ex.parts.length})`; }
+    else keep.push({ id, d, a: Math.round(sum * 100) / 100, desc: `Инвесткопилка (${list.length})`, src, cat: 'Сбережения', agg: true, parts: list.map(t => t.id) });
   }
   S.tx = keep.sort((x, y) => (x.d + (x.t || '')) < (y.d + (y.t || '')) ? 1 : -1);
+}
+const dayDiff = (a, b) => Math.round(Math.abs(new Date(a) - new Date(b)) / 864e5);
+const words = (s) => new Set(String(s || '').toLowerCase().replace(/[^a-zа-яё0-9 ]/gi, ' ').split(/\s+/).filter(w => w.length >= 4 && !/^(оплата|перевод|внешний|внутренний|операция|номеру|телефона|договор)$/.test(w)));
+const sameMerchant = (a, b) => { const A = words(a); for (const w of words(b)) if (A.has(w)) return true; return false; };
+function seenIds() { const s = new Set(); for (const t of S.tx) { s.add(t.id); for (const p of t.parts || []) s.add(p); } return s; }
+// a statement operation that is already in the data under another source (manual entry, CSV vs PDF of the same card)
+function findDuplicate(x, taken) {
+  for (const c of S.tx) {
+    if (taken.has(c.id) || c.src === x.src || c.agg) continue;
+    if (Math.abs(c.a - x.a) > 0.01) continue;
+    if (c.src === 'Вручную') { if (dayDiff(c.d, x.d) <= 1) return { c, manual: true }; continue; }
+    if (c.d === x.d && sameMerchant(c.desc, x.desc)) return { c, manual: false };
+  }
+  return null;
+}
+// returns 'skip' | 'replaced' | 'new'
+function addStatementTx(x, have, taken, stats) {
+  if (have.has(x.id)) { stats.skipped++; return 'skip'; }
+  if (/инвесткопилк/i.test(x.desc)) { const agg = S.tx.find(t => t.agg && t.d === x.d && t.src === x.src); if (agg && !agg.parts) { stats.skipped++; return 'skip'; } }
+  const dup = findDuplicate(x, taken);
+  if (dup && !dup.manual) { taken.add(dup.c.id); stats.skipped++; return 'skip'; }
+  if (dup && dup.manual) { taken.add(dup.c.id); S.tx = S.tx.filter(t => t.id !== dup.c.id); x.cat = dup.c.cat; x.mc = true; stats.replaced++; }
+  else x.cat = catOf(x).cat;
+  S.tx.push(x); have.add(x.id); stats.added++; return dup ? 'replaced' : 'new';
 }
 const hash36 = (s) => s.split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
 
@@ -1251,22 +1279,21 @@ async function importStatements() {
   if (pdfs.length) {
     toast('Читаю выписки…');
     let lib; try { lib = await pdfLib(); } catch (e) { toast(e.message); return; }
-    const have = new Set(S.tx.map(t => t.id));
+    const have = seenIds(), taken = new Set(), st = { added: 0, skipped: 0, replaced: 0 };
     for (const f of pdfs) {
       try {
         const r = await parseTbankPdf(lib, new Uint8Array(await readBuf(f)));
         if (r.contract && !S.ownContracts.includes(r.contract)) S.ownContracts.push(r.contract);
         for (const t of r.tx) {
           const id = hash36(t.d + '|' + t.a.toFixed(2) + '|' + t.desc + '|' + t.src + '|' + t.t);
-          if (have.has(id)) { skipped++; continue; }
-          const x = { id, d: t.d, t: t.t, a: Math.round(t.a * 100) / 100, desc: t.desc, src: t.src }; x.cat = catOf(x).cat;
-          S.tx.push(x); have.add(id); added++;
+          addStatementTx({ id, d: t.d, t: t.t, a: Math.round(t.a * 100) / 100, desc: t.desc, src: t.src }, have, taken, st);
         }
       } catch (e) { fails.push(f.name); }
     }
+    added = st.added; skipped = st.skipped;
     recategorizeAll(); afterTxImport(); persistNow(); renderAll();
     if (fails.length) openDialog(`<h3>Не все файлы прочитаны</h3><p class="sub" style="margin:0">Добавлено операций: ${added}. Не удалось прочитать: ${fails.map(esc).join(', ')}. Сейчас приложение понимает PDF-справки Т-Банка о движении средств, а также CSV и Excel из любого банка. Для другого банка пришлите пример PDF — добавлю.</p>`, `<button class="btn primary" value="cancel">Понятно</button>`);
-    else toast(`Добавлено операций: ${added}${skipped ? `, уже были: ${skipped}` : ''}`);
+    else toast(`Добавлено операций: ${added}${skipped ? `, уже были: ${skipped}` : ''}${st.replaced ? `, заменено ручных: ${st.replaced}` : ''}`);
   }
   if (others.length) importStatement(others[0]);
 }
@@ -1377,7 +1404,7 @@ function criticalAlerts() {
   const out = [];
   for (const miss of F.deadlineMiss) { const d = debtById(miss.id); out.push({ lvl: 'danger', t: `К сроку «${esc(d ? d.name : '')}» не хватит ≈ ${fmt(miss.amount)}`, d: `Срок — ${mName(miss.m)}. Все свободные деньги до срока уже откладываются. Остаток закроется в ${F.payoffBy[miss.id] ? mPrep(F.payoffBy[miss.id]) : 'следующих месяцах'}. Договоритесь о переносе этой части или сократите траты до срока.` }); }
   if (F.deficitMonths.length) out.push({ lvl: 'danger', t: `Не хватает на обязательные платежи: ${F.deficitMonths.slice(0, 2).map(mName).join(', ')}`, d: 'Это риск просрочки. Проверьте расходы и суммы платежей.' });
-  try { const c = calendarFor(0); if (c && c.minBal < 0) out.push({ lvl: 'warn', t: `${c.minDay} ${MG[ENG.parseM(c.cm).m - 1]} на счёте не хватит ≈ ${fmt(-c.minBal)}`, d: 'Перенесите платёж на день после зарплаты или отложите деньги заранее. Подробнее — «Платежи» → «По дням». Если на счетах есть свободные деньги, укажите их в «Ещё» → «Настройки».' }); } catch (e) {}
+  try { const c = calendarFor(0); const td = new Date().getDate(); const fut = c ? c.byDay.filter(x => x.d >= td) : []; if (c && fut.length) { const mn = fut.reduce((a, x) => x.bal < a.bal ? x : a, fut[0]); c.minBal = mn.bal; c.minDay = mn.d; } if (c && fut.length && c.minBal < 0) out.push({ lvl: 'warn', t: `${c.minDay} ${MG[ENG.parseM(c.cm).m - 1]} на счёте не хватит ≈ ${fmt(-c.minBal)}`, d: 'Перенесите платёж на день после зарплаты или отложите деньги заранее. Подробнее — «Платежи» → «По дням». Если на счетах есть свободные деньги, укажите их в «Ещё» → «Настройки».' }); } catch (e) {}
   return out;
 }
 const alertsHTML = (list) => list.map(a => `<details class="alert ${a.lvl}"><summary>${a.t}</summary><div>${a.d}</div></details>`).join('');
@@ -1422,7 +1449,8 @@ function viewToday() {
       <div class="kv"><div><span class="label">Без долгов</span><b>${F.payoff ? 'к ' + mDat(F.payoff) : 'не в этом горизонте'}</b></div><div><span class="label">Погашено</span><b>${bl ? fmtC(paid) + ' из ' + fmtC(bl.startTotal) : '—'}</b></div></div>
       <p class="sub" style="margin:8px 0 0">${target ? `Досрочно гасим: <b>${esc(debtName(target.id))}</b>${target.m !== curMonth() ? ` (с ${mGen(target.m)})` : ''}. ` : ''}${delta}</p></section>`;
   }
-  el.innerHTML = alertsHTML(criticalAlerts()) + week + up + dc;
+  const al = criticalAlerts();
+  el.innerHTML = week + up + dc + (al.length ? `<section class="card"><h2>Уведомления</h2>${alertsHTML(al)}</section>` : '');
   bindDebtChart();
 }
 
@@ -1461,13 +1489,18 @@ function quickAdd() {
   openDialog(`<h3>Новая трата</h3>
     <div class="form">${field('Сумма, ₽', `<input type="text" inputmode="decimal" name="amt" required autofocus>`)}${field('Дата', `<input type="date" name="d" value="${todayISO()}">`)}</div>
     ${field('Статья', `<div class="chips" id="qcats">${cats.map((c, i) => `<button type="button" class="chip" data-c="${esc(c)}" aria-pressed="${i === 0}">${esc(c)}</button>`).join('')}</div>`)}
-    ${field('Комментарий', '<input type="text" name="note" placeholder="необязательно">')}`,
+    ${field('Комментарий', '<input type="text" name="note" placeholder="необязательно">')}
+    <p class="alert warn" id="qWarn" hidden style="margin:0"></p>
+    <p class="hint" style="margin:0">Для наличных и карт, выписки которых вы не загружаете. Если позже такая же операция придёт в выписке, ручная запись заменится ею автоматически.</p>`,
     `<button class="btn ghost" value="cancel" formnovalidate>Отмена</button><button class="btn primary" value="ok">Добавить</button>`, (v, b) => {
       const a = parseNum(b.querySelector('[name=amt]').value); if (!a) { b.querySelector('[name=amt]').focus(); return false; }
       const cat = (b.querySelector('#qcats [aria-pressed="true"]') || {}).dataset.c || 'Прочее';
+      const dd = b.querySelector('[name=d]').value || todayISO();
+      const same = S.tx.find(t => Math.abs(t.a + Math.abs(a)) < 0.01 && dayDiff(t.d, dd) <= 1);
+      if (same && !b.dataset.ok) { b.dataset.ok = '1'; const w = b.querySelector('#qWarn'); w.hidden = false; w.innerHTML = `Похоже, эта трата уже есть: <b>${esc(payeeOf(same) ? payeeOf(same).name : same.desc)}</b>, ${shortDate(same.d)}, ${fmt(Math.abs(same.a))}. Если это другая трата, нажмите «Добавить» ещё раз.`; return false; }
       S.tx.unshift({ id: uid(), d: b.querySelector('[name=d]').value || todayISO(), a: -Math.abs(a), desc: b.querySelector('[name=note]').value.trim() || cat, src: 'Вручную', cat, mc: true });
       persistNow(); renderAll(); toast('Трата добавлена');
-    }, (b) => { b.querySelector('#qcats').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (!c) return; $$('#qcats .chip').forEach(x => x.setAttribute('aria-pressed', String(x === c))); }); });
+    }, (b) => { const rs = () => { delete b.dataset.ok; b.querySelector('#qWarn').hidden = true; }; b.querySelector('[name=amt]').addEventListener('input', rs); b.querySelector('[name=d]').addEventListener('input', rs); b.querySelector('#qcats').addEventListener('click', (e) => { const c = e.target.closest('.chip'); if (!c) return; $$('#qcats .chip').forEach(x => x.setAttribute('aria-pressed', String(x === c))); }); });
 }
 function txCatDialog(id) {
   const t = S.tx.find(x => x.id === id); if (!t) return; const key = payeeKey(t);
@@ -1723,6 +1756,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.path && (t.type === 'checkbox' || t.tagName === 'SELECT')) { setPath(t.dataset.path, t.type === 'checkbox' ? t.checked : +t.value); persistNow(); renderAll(); }
   else if (t.dataset.path || t.dataset.lim || t.dataset.f || t.dataset.e) { persistNow(); renderAll(); }
 });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') renderAll(); });
 let rz = null; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (view === 'today') viewToday(); }, 250); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 renderAll();
