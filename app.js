@@ -1308,21 +1308,70 @@ function extraTarget() { for (const r of F.months) { const e = Object.entries(r.
 // ---------- small UI helpers ----------
 const bar = (v, max, color) => `<div class="bar"><i style="width:${Math.max(0, Math.min(100, max > 0 ? v / max * 100 : 0))}%;background:${color}"></i></div>`;
 const shortDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return `${d} ${MS[m - 1]}`; };
-function debtChartSVG(height = 200) {
-  const cm = curMonth(); const W = 640, H = height, pl = 8, pr = 8, pt = 10, pb = 30;
-  const pts = [totalDebt()].concat(F.months.map(r => r.totalBal));
-  const N = pts.length; const bl = S.baseline;
-  const blPts = bl ? [bl.startTotal].concat(bl.rows.map(r => r.bal)) : [];
-  const off = bl ? ENG.diffM(bl.start, cm) : 0;
-  const maxV = Math.max(1, ...pts, ...blPts.slice(Math.max(0, off)));
-  const len = Math.max(N, blPts.length - off);
-  const xs = (i) => pl + (W - pl - pr) * (len <= 1 ? 0 : i / (len - 1)); const ys = (v) => pt + (H - pt - pb) * (1 - v / maxV);
-  let area = `M${xs(0)},${ys(0)}`; pts.forEach((v, i) => area += `L${xs(i).toFixed(1)},${ys(v).toFixed(1)}`); area += `L${xs(N - 1)},${ys(0)}Z`;
-  let line = ''; pts.forEach((v, i) => line += (i ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(v).toFixed(1));
-  let blL = ''; if (bl) blPts.slice(Math.max(0, off)).forEach((v, i) => blL += (i ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(v).toFixed(1));
-  let ticks = ''; const step = Math.max(1, Math.ceil(len / 5));
-  for (let i = 0; i < len; i += step) ticks += `<text x="${xs(i)}" y="${H - 6}" font-size="20" fill="var(--ink-3)" text-anchor="${i === 0 ? 'start' : 'middle'}">${mShort(ENG.addM(cm, i))}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" class="mini-chart" role="img" aria-label="Остаток долга по месяцам"><path d="${area}" fill="var(--accent)" fill-opacity=".16"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>${blL ? `<path d="${blL}" fill="none" stroke="var(--ink-3)" stroke-width="1.5" stroke-dasharray="5 5"/>` : ''}${ticks}</svg>`;
+let chartHi = null;
+function debtChartHTML() {
+  const cm = curMonth(); const bl = S.baseline;
+  const cw = Math.max(300, Math.min(720, (document.documentElement.clientWidth || 400) - 60));
+  const W = Math.round(cw), H = W < 500 ? 230 : 290, pl = 44, pr = 8, pt = 10, pb = 26;
+  const start = bl && bl.start < cm ? bl.start : cm;
+  const fEnd = F.payoff || F.months[F.months.length - 1].m;
+  const bEnd = bl && bl.rows.length ? bl.rows[bl.rows.length - 1].m : fEnd;
+  const N = Math.min(ENG.diffM(start, fEnd > bEnd ? fEnd : bEnd) + 2, 72);
+  const off = ENG.diffM(start, cm);
+  const ids = F.debts.filter(id => F.months.some(r => r.bal[id] > 0.5) || (+(debtById(id) || {}).balance > 0))
+    .sort((a, b) => (F.payoffBy[b] || '9999') < (F.payoffBy[a] || '9999') ? -1 : 1);
+  const balAt = (id, i) => { const k = i - off; if (k < 0) return null; if (k === 0) { const d = debtById(id); return d ? +d.balance : 0; } const r = F.months[k - 1]; return r ? r.bal[id] || 0 : 0; };
+  const blAt = (i) => { if (!bl) return null; const k = i - ENG.diffM(start, bl.start); if (k < 0) return null; if (k === 0) return bl.startTotal; const r = bl.rows[k - 1]; return r ? r.bal : 0; };
+  let maxV = 1; for (let i = 0; i < N; i++) { let t = 0; for (const id of ids) t += balAt(id, i) || 0; maxV = Math.max(maxV, t, blAt(i) || 0); }
+  for (const h of S.history) maxV = Math.max(maxV, h.t);
+  maxV *= 1.04;
+  const xs = (i) => pl + (W - pl - pr) * (N <= 1 ? 0 : i / (N - 1)); const ys = (v) => pt + (H - pt - pb) * (1 - v / maxV);
+  let g = '';
+  const stepV = maxV > 3e6 ? 1e6 : maxV > 1.2e6 ? 5e5 : 2e5;
+  for (let v = 0; v <= maxV; v += stepV) g += `<line x1="${pl}" x2="${W - pr}" y1="${ys(v).toFixed(1)}" y2="${ys(v).toFixed(1)}" stroke="var(--line)"/><text x="${pl - 6}" y="${(ys(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--ink-3)">${v === 0 ? '0' : v >= 1e6 ? (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн' : Math.round(v / 1e3) + ' т'}</text>`;
+  const step = Math.max(1, Math.ceil(N / (W < 500 ? 4 : 7)));
+  for (let i = 0; i < N; i += step) g += `<text x="${xs(i).toFixed(1)}" y="${H - 8}" text-anchor="${i === 0 ? 'start' : 'middle'}" font-size="11" fill="var(--ink-3)">${mShort(ENG.addM(start, i))}</text>`;
+  // stacked forecast layers
+  let lower = new Array(N).fill(0);
+  for (const id of ids) {
+    const top = lower.slice(); for (let i = off; i < N; i++) top[i] = lower[i] + (balAt(id, i) || 0);
+    let d = ''; for (let i = off; i < N; i++) d += (i === off ? 'M' : 'L') + xs(i).toFixed(1) + ',' + ys(top[i]).toFixed(1);
+    for (let i = N - 1; i >= off; i--) d += 'L' + xs(i).toFixed(1) + ',' + ys(lower[i]).toFixed(1);
+    const dim = chartHi && chartHi !== id;
+    g += `<path d="${d}Z" fill="${debtColor(id)}" fill-opacity="${dim ? '.15' : '.82'}" stroke="var(--surface)" stroke-width=".6"/>`;
+    lower = top;
+  }
+  // plan (dashed)
+  if (bl) { let d = ''; for (let i = 0; i < N; i++) { const v = blAt(i); if (v == null) continue; d += (d ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(v).toFixed(1); } g += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-opacity=".7" stroke-width="2" stroke-dasharray="6 5"/>`; }
+  // actual debt (history dots)
+  for (const h of S.history) { const m = h.d.slice(0, 7), day = +h.d.slice(8, 10); const i = ENG.diffM(start, m) + (day - 1) / 30; if (i < 0 || i > N - 1) continue; g += `<circle cx="${xs(i).toFixed(1)}" cy="${ys(h.t).toFixed(1)}" r="4.5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.2"/>`; }
+  g += `<line x1="${xs(off).toFixed(1)}" x2="${xs(off).toFixed(1)}" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" stroke-opacity=".3"/><line id="dcCur" x1="0" x2="0" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" visibility="hidden"/>`;
+  debtChartCtx = { W, N, xs, ids, balAt, blAt, start, off };
+  const legend = ids.map(id => { const d = debtById(id); const b = d ? +d.balance : 0; return `<button type="button" class="lg${chartHi === id ? ' on' : ''}${chartHi && chartHi !== id ? ' dim' : ''}" data-act="chart-hi" data-id="${id}"><span class="dot" style="background:${debtColor(id)}"></span><span class="lg-n">${esc(debtName(id))}</span><span class="lg-v" data-def="${esc(fmtC(b) + (F.payoffBy[id] ? ' · до ' + mShort(F.payoffBy[id]) : ''))}">${fmtC(b)}${F.payoffBy[id] ? ' · до ' + mShort(F.payoffBy[id]) : ''}</span></button>`; }).join('');
+  return `<div class="chart" id="dcWrap"><svg viewBox="0 0 ${W} ${H}" width="100%" class="debt-chart" id="dcSvg" role="img" aria-label="Остаток долга по месяцам">${g}</svg></div><div class="dc-info" id="dcInfo">Нажмите на график, чтобы увидеть любой месяц: остатки в списке ниже обновятся.</div>
+    <div class="lg-keys"><span><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/></svg> план</span><span><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="2"/></svg> факт</span><span>цветные слои — прогноз по кредитам</span></div>
+    <div class="legend2">${legend}</div>`;
+}
+let debtChartCtx = null;
+function bindDebtChart() {
+  const svg = $('#dcSvg'), info = $('#dcInfo'), cur = $('#dcCur'); if (!svg || !debtChartCtx) return;
+  const { W, N, xs, ids, balAt, blAt, start, off } = debtChartCtx;
+  const def = info.innerHTML;
+  const reset = () => { cur.setAttribute('visibility', 'hidden'); info.innerHTML = def; $$('.lg-v').forEach(e => e.textContent = e.dataset.def); };
+  const show = (ev) => {
+    const rect = svg.getBoundingClientRect(); const x = (ev.clientX - rect.left) / rect.width * W;
+    let i = Math.round((x - xs(0)) / (xs(1) - xs(0) || 1)); i = Math.max(0, Math.min(N - 1, i));
+    cur.setAttribute('x1', xs(i)); cur.setAttribute('x2', xs(i)); cur.setAttribute('visibility', 'visible');
+    const m = ENG.addM(start, i); const pv = blAt(i);
+    if (i >= off) {
+      let tot = 0; const per = {}; for (const id of ids) { const b = balAt(id, i) || 0; per[id] = b; tot += b; }
+      info.innerHTML = `<b>${mName(m)}</b> · прогноз <b>${fmtC(tot)}</b>${pv != null ? ` · план ${fmtC(pv)}` : ''} <button type="button" class="btn tiny ghost" data-act="dc-reset">сейчас</button>`;
+      $$('.lg').forEach(btn => { const v = btn.querySelector('.lg-v'); const b = per[btn.dataset.id] || 0; v.textContent = b > 0.5 ? fmtC(b) : 'закрыт ✓'; });
+    } else info.innerHTML = `<b>${mName(m)}</b>${pv != null ? ` · план ${fmtC(pv)}` : ''} <button type="button" class="btn tiny ghost" data-act="dc-reset">сейчас</button>`;
+  };
+  svg.addEventListener('pointerdown', show); svg.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') show(e); });
+  svg.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') reset(); });
+  info.addEventListener('click', (e) => { if (e.target.closest('[data-act=dc-reset]')) { e.stopPropagation(); reset(); } });
 }
 function criticalAlerts() {
   const out = [];
@@ -1369,11 +1418,12 @@ function viewToday() {
     let delta = '';
     if (bl) { const cm = curMonth(); const k = ENG.diffM(bl.start, cm); const planBal = k <= 0 ? bl.startTotal : (bl.rows[k - 1] || {}).bal; if (planBal != null) { const dlt = planBal - totalDebt(); if (Math.abs(dlt) > 5000) delta = `<span class="${dlt > 0 ? 'pos' : 'neg'}">${dlt > 0 ? 'опережаете план на ' : 'отстаёте от плана на '}${fmtC(Math.abs(dlt))}</span>`; } }
     dc = `<section class="card"><div class="row-between"><h2>Как тают долги</h2><span class="label">${fmtC(totalDebt())}</span></div>
-      ${debtChartSVG()}
+      ${debtChartHTML()}
       <div class="kv"><div><span class="label">Без долгов</span><b>${F.payoff ? 'к ' + mDat(F.payoff) : 'не в этом горизонте'}</b></div><div><span class="label">Погашено</span><b>${bl ? fmtC(paid) + ' из ' + fmtC(bl.startTotal) : '—'}</b></div></div>
       <p class="sub" style="margin:8px 0 0">${target ? `Досрочно гасим: <b>${esc(debtName(target.id))}</b>${target.m !== curMonth() ? ` (с ${mGen(target.m)})` : ''}. ` : ''}${delta}</p></section>`;
   }
   el.innerHTML = alertsHTML(criticalAlerts()) + week + up + dc;
+  bindDebtChart();
 }
 
 // ---------- view: Expenses ----------
@@ -1608,6 +1658,7 @@ document.addEventListener('click', async (e) => {
   const act = b.dataset.act, id = b.dataset.id;
   switch (act) {
     case 'quick-add': quickAdd(); break;
+    case 'chart-hi': chartHi = chartHi === id ? null : id; viewToday(); break;
     case 'import-statements': importStatements(); break;
     case 'ex-mode': exMode = b.dataset.m; exOff = 0; exAll = false; viewExpenses(); break;
     case 'ex-prev': exOff--; exAll = false; viewExpenses(); break;
@@ -1672,6 +1723,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.path && (t.type === 'checkbox' || t.tagName === 'SELECT')) { setPath(t.dataset.path, t.type === 'checkbox' ? t.checked : +t.value); persistNow(); renderAll(); }
   else if (t.dataset.path || t.dataset.lim || t.dataset.f || t.dataset.e) { persistNow(); renderAll(); }
 });
+let rz = null; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (view === 'today') viewToday(); }, 250); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 renderAll();
 initSync();

@@ -121,8 +121,19 @@ details.card summary{font-weight:600;color:var(--ink);font-size:16px;padding:0}
 .alert div{margin-top:6px;color:var(--ink-2)}
 .alert.warn{background:var(--warn-soft)}.alert.danger{background:var(--danger-soft)}
 .mini-chart{display:block;width:100%;height:auto;margin-top:6px}
+.debt-chart{display:block;width:100%;height:auto;margin-top:6px;touch-action:pan-y}
+.dc-info{font-size:14px;color:var(--ink-2);background:var(--surface-2);border-radius:10px;padding:8px 10px;margin-top:8px;min-height:38px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px}
+.dc-info .btn{min-height:28px;padding:2px 8px;font-size:13px}
+.lg-keys{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink-3);margin:6px 0 4px;align-items:center}
+.lg-keys span{display:inline-flex;align-items:center;gap:5px}
+.legend2{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;margin-top:6px}
+@media (min-width:560px){.legend2{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:2px 14px}}
+.lg{display:flex;width:100%;min-width:0;align-items:center;gap:6px;background:none;border:0;padding:6px 4px;border-radius:8px;cursor:pointer;color:inherit;text-align:left;font-size:13px;min-height:36px}
+.lg .lg-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg .lg-v{color:var(--ink-3);white-space:nowrap;font-size:12px}
+.lg.on{background:var(--surface-2)}.lg.dim{opacity:.45}
 .chart{position:relative}
-.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.35;min-width:160px;transform:translateX(-50%);display:none;z-index:3}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);border-radius:10px;padding:8px 10px;font-size:12px;line-height:1.4;min-width:170px;max-width:240px;transform:translateX(-50%);display:none;z-index:3;box-shadow:0 6px 20px rgba(0,0,0,.25)}
 .num-in{width:110px;text-align:right;min-height:40px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 10px;font-size:16px}
 .day-in{width:62px;min-height:40px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 8px;font-size:16px}
 .grow-in{flex:1;min-width:0;min-height:40px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:6px 10px;font-size:16px}
