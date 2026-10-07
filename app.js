@@ -1335,70 +1335,157 @@ function extraTarget() { for (const r of F.months) { const e = Object.entries(r.
 // ---------- small UI helpers ----------
 const bar = (v, max, color) => `<div class="bar"><i style="width:${Math.max(0, Math.min(100, max > 0 ? v / max * 100 : 0))}%;background:${color}"></i></div>`;
 const shortDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return `${d} ${MS[m - 1]}`; };
-let chartHi = null;
+let chartHi = null, chartSel = null;
+let chartStep = localStorage.getItem('debtplan.chartStep') || '2w';
+// ---- discrete debt timeline: balances per debt at chosen dates (week / 2 weeks / month ends) ----
+const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return isoOf(d); };
+function debtTimeline() {
+  const today = todayISO(), cm = curMonth(), sm = S.salary;
+  const ids = F.debts.filter(id => F.months.some(r => r.bal[id] > 0.5) || (+(debtById(id) || {}).balance > 0));
+  const payParts = (k) => { // planned payments of month k as [{id, day, amt}]
+    const r = F.months[k]; if (!r) return []; const m = r.m, n = dim(m), parts = [];
+    for (const id of Object.keys(r.pay)) {
+      const d = debtById(id); const day = Math.min(+((d && (d.payDay || d.dueDay)) || 28), n);
+      const mn = r.minPay[id] || 0, ex = r.extraPay[id] || 0;
+      if (mn > 0.5) parts.push({ id, day, amt: mn });
+      if (ex > 0.5) parts.push({ id, day: Math.min(n, Math.max(day, (+sm.salDay || 10) + 1)), amt: ex });
+    }
+    return parts;
+  };
+  const cache = {};
+  const balancesAt = (iso) => {
+    const m = iso.slice(0, 7), day = +iso.slice(8, 10), k = ENG.diffM(cm, m);
+    if (k < 0 || k >= F.months.length) return null;
+    if (!cache[k]) cache[k] = payParts(k);
+    const r = F.months[k], out = {};
+    for (const id of ids) {
+      const start = k === 0 ? +((debtById(id) || {}).balance || 0) : (F.months[k - 1].bal[id] || 0);
+      const end = r.bal[id] || 0;
+      const parts = cache[k].filter(p => p.id === id); const paidAll = parts.reduce((a, p) => a + p.amt, 0);
+      const interest = end - start + paidAll;
+      const tday = k === 0 ? +today.slice(8, 10) : 0;
+      const due = parts.filter(p => p.day <= day || (k === 0 && p.day <= tday));
+      const paid = due.reduce((a, p) => a + p.amt, 0);
+      const firstDay = parts.length ? Math.min(...parts.map(p => p.day)) : dim(m);
+      out[id] = Math.max(0, start + (day >= firstDay || (k === 0 && firstDay <= tday) ? interest : 0) - paid);
+      if (day >= dim(m)) out[id] = end;
+    }
+    return out;
+  };
+  const planAt = (iso) => {
+    const bl = S.baseline; if (!bl) return null;
+    const m = iso.slice(0, 7), k = ENG.diffM(bl.start, m); if (k < 0) return null;
+    const prev = k === 0 ? bl.startTotal : (bl.rows[k - 1] || {}).bal; const end = (bl.rows[k] || {}).bal;
+    if (prev == null || end == null) return prev == null ? null : prev;
+    let frac = +iso.slice(8, 10) / dim(m);
+    const row = bl.rows[k];
+    if (row && row.payTotal > 0) { const dd = +iso.slice(8, 10); let due = 0; for (const [id, v] of Object.entries(row.pay)) { const d = debtById(id); const pd = Math.min(+((d && (d.payDay || d.dueDay)) || 28), dim(m)); if (pd <= dd) due += v; } frac = dd >= dim(m) ? 1 : due / row.payTotal; }
+    return prev + (end - prev) * frac;
+  };
+  const factAt = (iso) => { let v = null; for (const h of S.history) if (h.d <= iso) v = h.t; return v; };
+  // point dates
+  const pts = []; const lastM = F.payoff || F.months[F.months.length - 1].m;
+  const end = lastM + '-' + String(dim(lastM)).padStart(2, '0');
+  const step = chartStep === 'w' ? 7 : chartStep === '2w' ? 14 : 0;
+  const sunday = (iso) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); return isoOf(d); };
+  const blStart = S.baseline ? S.baseline.start + '-01' : today;
+  if (step) {
+    let p = sunday(today); const past = [];
+    for (let q = addDays(p, -step); q >= blStart && past.length < 8; q = addDays(q, -step)) past.unshift(q);
+    pts.push(...past.map(d => ({ d, past: true })));
+    pts.push({ d: today, now: true });
+    if (p === today) p = addDays(p, step);
+    for (; p <= addDays(end, step) && pts.length < 80; p = addDays(p, step)) pts.push({ d: p });
+  } else {
+    let m = S.baseline && S.baseline.start < cm ? S.baseline.start : cm;
+    for (; m < cm; m = ENG.addM(m, 1)) pts.push({ d: m + '-' + String(dim(m)).padStart(2, '0'), past: true });
+    pts.push({ d: today, now: true });
+    for (m = cm; m <= ENG.addM(lastM, 1) && pts.length < 80; m = ENG.addM(m, 1)) { const e = m + '-' + String(dim(m)).padStart(2, '0'); if (e > today) pts.push({ d: e }); }
+  }
+  for (const p of pts) {
+    p.plan = planAt(p.d);
+    if (p.past) { p.fact = factAt(p.d); p.total = p.fact; p.per = null; }
+    else if (p.now) { p.per = {}; for (const id of ids) p.per[id] = +((debtById(id) || {}).balance || 0); p.total = totalDebt(); p.fact = p.total; }
+    else { p.per = balancesAt(p.d) || {}; p.total = Object.values(p.per).reduce((a, v) => a + v, 0); }
+  }
+  // trim trailing zero points (keep one)
+  while (pts.length > 2 && pts[pts.length - 1].total < 1 && pts[pts.length - 2].total < 1) pts.pop();
+  return { pts, ids };
+}
+const ptLabel = (p) => { const [y, m, d] = p.d.split('-').map(Number); if (p.now) return `Сегодня, ${d} ${MG[m - 1]}`; if (chartStep === 'm') return `На конец ${MG[m - 1]} ${y}`; return `На ${d} ${MG[m - 1]}${y !== new Date().getFullYear() ? ' ' + y : ''}`; };
+const ptShort = (p) => { const [y, m, d] = p.d.split('-').map(Number); return chartStep === 'm' ? MS[m - 1] + (m === 1 ? ' ' + String(y).slice(2) : '') : `${d}.${String(m).padStart(2, '0')}`; };
+let tlCache = null;
 function debtChartHTML() {
-  const cm = curMonth(); const bl = S.baseline;
+  const tl = debtTimeline(); tlCache = tl;
+  const { pts, ids } = tl;
+  const order = ids.slice().sort((a, b) => (F.payoffBy[b] || '9999') < (F.payoffBy[a] || '9999') ? -1 : 1);
+  tl.order = order;
+  const nowIdx = pts.findIndex(p => p.now); if (chartSel == null || chartSel >= pts.length) chartSel = nowIdx;
   const cw = Math.max(300, Math.min(720, (document.documentElement.clientWidth || 400) - 60));
-  const W = Math.round(cw), H = W < 500 ? 230 : 290, pl = 44, pr = 8, pt = 10, pb = 26;
-  const start = bl && bl.start < cm ? bl.start : cm;
-  const fEnd = F.payoff || F.months[F.months.length - 1].m;
-  const bEnd = bl && bl.rows.length ? bl.rows[bl.rows.length - 1].m : fEnd;
-  const N = Math.min(ENG.diffM(start, fEnd > bEnd ? fEnd : bEnd) + 2, 72);
-  const off = ENG.diffM(start, cm);
-  const ids = F.debts.filter(id => F.months.some(r => r.bal[id] > 0.5) || (+(debtById(id) || {}).balance > 0))
-    .sort((a, b) => (F.payoffBy[b] || '9999') < (F.payoffBy[a] || '9999') ? -1 : 1);
-  const balAt = (id, i) => { const k = i - off; if (k < 0) return null; if (k === 0) { const d = debtById(id); return d ? +d.balance : 0; } const r = F.months[k - 1]; return r ? r.bal[id] || 0 : 0; };
-  const blAt = (i) => { if (!bl) return null; const k = i - ENG.diffM(start, bl.start); if (k < 0) return null; if (k === 0) return bl.startTotal; const r = bl.rows[k - 1]; return r ? r.bal : 0; };
-  let maxV = 1; for (let i = 0; i < N; i++) { let t = 0; for (const id of ids) t += balAt(id, i) || 0; maxV = Math.max(maxV, t, blAt(i) || 0); }
-  for (const h of S.history) maxV = Math.max(maxV, h.t);
-  maxV *= 1.04;
-  const xs = (i) => pl + (W - pl - pr) * (N <= 1 ? 0 : i / (N - 1)); const ys = (v) => pt + (H - pt - pb) * (1 - v / maxV);
+  const W = Math.round(cw), H = W < 500 ? 220 : 280, pl = 40, pr = 6, pt = 12, pb = 24;
+  const N = pts.length, maxV = Math.max(1, ...pts.map(p => Math.max(p.total || 0, p.plan || 0, p.fact || 0))) * 1.06;
+  const slot = (W - pl - pr) / N, bw = Math.max(2, Math.min(26, slot * (N > 40 ? 0.72 : 0.62)));
+  const cx = (i) => pl + slot * (i + 0.5), ys = (v) => pt + (H - pt - pb) * (1 - v / maxV);
   let g = '';
   const stepV = maxV > 3e6 ? 1e6 : maxV > 1.2e6 ? 5e5 : 2e5;
-  for (let v = 0; v <= maxV; v += stepV) g += `<line x1="${pl}" x2="${W - pr}" y1="${ys(v).toFixed(1)}" y2="${ys(v).toFixed(1)}" stroke="var(--line)"/><text x="${pl - 6}" y="${(ys(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--ink-3)">${v === 0 ? '0' : v >= 1e6 ? (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн' : Math.round(v / 1e3) + ' т'}</text>`;
-  const step = Math.max(1, Math.ceil(N / (W < 500 ? 4 : 7)));
-  for (let i = 0; i < N; i += step) g += `<text x="${xs(i).toFixed(1)}" y="${H - 8}" text-anchor="${i === 0 ? 'start' : 'middle'}" font-size="11" fill="var(--ink-3)">${mShort(ENG.addM(start, i))}</text>`;
-  // stacked forecast layers
-  let lower = new Array(N).fill(0);
-  for (const id of ids) {
-    const top = lower.slice(); for (let i = off; i < N; i++) top[i] = lower[i] + (balAt(id, i) || 0);
-    let d = ''; for (let i = off; i < N; i++) d += (i === off ? 'M' : 'L') + xs(i).toFixed(1) + ',' + ys(top[i]).toFixed(1);
-    for (let i = N - 1; i >= off; i--) d += 'L' + xs(i).toFixed(1) + ',' + ys(lower[i]).toFixed(1);
-    const dim = chartHi && chartHi !== id;
-    g += `<path d="${d}Z" fill="${debtColor(id)}" fill-opacity="${dim ? '.15' : '.82'}" stroke="var(--surface)" stroke-width=".6"/>`;
-    lower = top;
-  }
-  // plan (dashed)
-  if (bl) { let d = ''; for (let i = 0; i < N; i++) { const v = blAt(i); if (v == null) continue; d += (d ? 'L' : 'M') + xs(i).toFixed(1) + ',' + ys(v).toFixed(1); } g += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-opacity=".7" stroke-width="2" stroke-dasharray="6 5"/>`; }
-  // actual debt (history dots)
-  for (const h of S.history) { const m = h.d.slice(0, 7), day = +h.d.slice(8, 10); const i = ENG.diffM(start, m) + (day - 1) / 30; if (i < 0 || i > N - 1) continue; g += `<circle cx="${xs(i).toFixed(1)}" cy="${ys(h.t).toFixed(1)}" r="4.5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.2"/>`; }
-  g += `<line x1="${xs(off).toFixed(1)}" x2="${xs(off).toFixed(1)}" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" stroke-opacity=".3"/><line id="dcCur" x1="0" x2="0" y1="${pt}" y2="${H - pb}" stroke="var(--ink)" visibility="hidden"/>`;
-  debtChartCtx = { W, N, xs, ids, balAt, blAt, start, off };
-  const legend = ids.map(id => { const d = debtById(id); const b = d ? +d.balance : 0; return `<button type="button" class="lg${chartHi === id ? ' on' : ''}${chartHi && chartHi !== id ? ' dim' : ''}" data-act="chart-hi" data-id="${id}"><span class="dot" style="background:${debtColor(id)}"></span><span class="lg-n">${esc(debtName(id))}</span><span class="lg-v" data-def="${esc(fmtC(b) + (F.payoffBy[id] ? ' · до ' + mShort(F.payoffBy[id]) : ''))}">${fmtC(b)}${F.payoffBy[id] ? ' · до ' + mShort(F.payoffBy[id]) : ''}</span></button>`; }).join('');
-  return `<div class="chart" id="dcWrap"><svg viewBox="0 0 ${W} ${H}" width="100%" class="debt-chart" id="dcSvg" role="img" aria-label="Остаток долга по месяцам">${g}</svg></div><div class="dc-info" id="dcInfo">Нажмите на график, чтобы увидеть любой месяц: остатки в списке ниже обновятся.</div>
-    <div class="lg-keys"><span><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/></svg> план</span><span><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="2"/></svg> факт</span><span>цветные слои — прогноз по кредитам</span></div>
+  for (let v = 0; v <= maxV; v += stepV) g += `<line x1="${pl}" x2="${W - pr}" y1="${ys(v).toFixed(1)}" y2="${ys(v).toFixed(1)}" stroke="var(--line)"/><text x="${pl - 5}" y="${(ys(v) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--ink-3)">${v === 0 ? '0' : v >= 1e6 ? (v / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн' : Math.round(v / 1e3) + ' т'}</text>`;
+  // selection band
+  g += `<rect x="${(cx(chartSel) - slot / 2).toFixed(1)}" y="${pt}" width="${slot.toFixed(1)}" height="${H - pt - pb}" fill="var(--accent)" fill-opacity=".10" rx="4"/>`;
+  pts.forEach((p, i) => {
+    const x = cx(i) - bw / 2; const sel = i === chartSel;
+    if (p.past || !p.per) { if (p.total != null) g += `<rect x="${x.toFixed(1)}" y="${ys(p.total).toFixed(1)}" width="${bw.toFixed(1)}" height="${(ys(0) - ys(p.total)).toFixed(1)}" fill="var(--ink-3)" fill-opacity="${sel ? .9 : .55}" rx="${Math.min(3, bw / 3)}"/>`; return; }
+    let y0 = 0;
+    for (const id of order) {
+      const v = p.per[id] || 0; if (v < 1) continue;
+      const dimmed = chartHi && chartHi !== id;
+      g += `<rect x="${x.toFixed(1)}" y="${ys(y0 + v).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.5, ys(y0) - ys(y0 + v)).toFixed(1)}" fill="${debtColor(id)}" fill-opacity="${dimmed ? .15 : sel ? 1 : .78}"/>`;
+      y0 += v;
+    }
+  });
+  // plan as a dashed step line
+  let pl2 = ''; pts.forEach((p, i) => { if (p.plan == null) return; const y = ys(p.plan).toFixed(1); pl2 += (pl2 ? `L${(cx(i) - slot / 2).toFixed(1)},${y}` : `M${(cx(i) - slot / 2).toFixed(1)},${y}`) + `L${(cx(i) + slot / 2).toFixed(1)},${y}`; });
+  if (pl2) g += `<path d="${pl2}" fill="none" stroke="var(--ink)" stroke-opacity=".75" stroke-width="2" stroke-dasharray="5 4"/>`;
+  // fact markers
+  pts.forEach((p, i) => { if (p.fact != null) g += `<circle cx="${cx(i).toFixed(1)}" cy="${ys(p.fact).toFixed(1)}" r="4" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>`; });
+  // x labels: today, selected and a few evenly spaced
+  const want = new Set([0, nowIdx, N - 1]); const every = Math.max(1, Math.round(N / (W < 500 ? 4 : 7))); for (let i = 0; i < N; i += every) want.add(i);
+  const used = []; for (const i of [...want].sort((a, b) => a - b)) { const x = cx(i); if (used.some(u => Math.abs(u - x) < 34)) continue; used.push(x); g += `<text x="${x.toFixed(1)}" y="${H - 7}" text-anchor="${x > W - 30 ? 'end' : x < pl + 20 ? 'start' : 'middle'}" font-size="11" fill="var(--ink-3)">${i === nowIdx ? 'сейчас' : ptShort(pts[i])}</text>`; }
+  // selected marker
+  const sp = pts[chartSel];
+  g += `<line x1="${cx(chartSel).toFixed(1)}" x2="${cx(chartSel).toFixed(1)}" y1="${pt}" y2="${ys(sp.total || 0).toFixed(1)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="2 3"/>`;
+  tl.geo = { W, slot, pl, N };
+  const legend = order.map(id => `<button type="button" class="lg${chartHi === id ? ' on' : ''}${chartHi && chartHi !== id ? ' dim' : ''}" data-act="chart-hi" data-id="${id}"><span class="dot" style="background:${debtColor(id)}"></span><span class="lg-n">${esc(debtName(id))}</span><span class="lg-v" data-id="${id}"></span></button>`).join('');
+  return `<div class="seg seg3"><button type="button" data-act="chart-step" data-s="w" aria-pressed="${chartStep === 'w'}">Неделя</button><button type="button" data-act="chart-step" data-s="2w" aria-pressed="${chartStep === '2w'}">2 недели</button><button type="button" data-act="chart-step" data-s="m" aria-pressed="${chartStep === 'm'}">Месяц</button></div>
+    <div class="dc-metrics" id="dcMetrics"></div>
+    <div class="chart" id="dcWrap"><svg viewBox="0 0 ${W} ${H}" width="100%" class="debt-chart" id="dcSvg" role="img" aria-label="Остаток долга по датам">${g}</svg></div>
+    <div class="lg-keys"><span><svg width="22" height="8"><line x1="0" x2="22" y1="4" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/></svg> план</span><span><svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="2"/></svg> факт</span><span><svg width="10" height="10"><rect width="10" height="10" rx="2" fill="currentColor" opacity=".55"/></svg> прошлое</span><span>цвет — прогноз по кредитам</span></div>
     <div class="legend2">${legend}</div>`;
 }
-let debtChartCtx = null;
+function fillChartInfo() {
+  const tl = tlCache; if (!tl) return; const p = tl.pts[chartSel], prev = tl.pts[chartSel - 1], bl = S.baseline;
+  const el = $('#dcMetrics'); if (!el) return;
+  const tot = p.total || 0; const ch = prev && prev.total != null ? tot - prev.total : null;
+  const per = chartStep === 'w' ? 'за неделю' : chartStep === '2w' ? 'за 2 недели' : 'за месяц';
+  const diff = p.plan != null ? p.plan - tot : null;
+  const paid = bl ? bl.startTotal - tot : null;
+  const left = F.payoff ? Math.max(0, ENG.diffM(p.d.slice(0, 7), F.payoff)) : null;
+  let unmarked = '';
+  if (p.now && F.months[0]) { const td = new Date().getDate(); const list = Object.keys(F.months[0].minPay).filter(id => { const d = debtById(id); return d && d.kind !== 'deadline' && (F.months[0].minPay[id] || 0) > 0.5 && Math.min(+(d.payDay || d.dueDay) || 28, dim(curMonth())) < td; }); if (list.length) unmarked = `<p class="small neg" style="margin:6px 0 0">Не отмечены прошедшие платежи: ${list.map(id => esc(debtName(id))).join(', ')}. Если вы их внесли, нажмите «Оплачено» в «Платежах» — план и факт сравняются.</p>`; }
+  el.innerHTML = `<div class="row-between"><b class="dc-date">${ptLabel(p)}</b>${chartSel !== tl.pts.findIndex(x => x.now) ? '<button type="button" class="btn tiny ghost" data-act="chart-now">к сегодня</button>' : ''}</div>
+    <div class="dc-grid">
+      <div><span class="label">Долг</span><b>${fmtC(tot)}</b>${ch != null && Math.abs(ch) >= 1 ? `<span class="small ${ch < 0 ? 'pos' : 'neg'}">${ch < 0 ? '−' : '+'}${fmtC(Math.abs(ch))} ${per}</span>` : ''}</div>
+      <div><span class="label">План</span><b>${p.plan != null ? fmtC(p.plan) : '—'}</b>${diff != null && Math.abs(diff) >= 1000 ? `<span class="small ${diff >= 0 ? 'pos' : 'neg'}">${diff >= 0 ? 'лучше на ' : 'хуже на '}${fmtC(Math.abs(diff))}</span>` : ''}</div>
+      <div><span class="label">Погашено</span><b>${paid != null ? fmtC(Math.max(0, paid)) : '—'}</b>${bl ? `<span class="small muted">из ${fmtC(bl.startTotal)}</span>` : ''}</div>
+      <div><span class="label">До конца долгов</span><b>${left != null ? (left === 0 ? 'меньше месяца' : left + ' ' + plural(left, ['месяц', 'месяца', 'месяцев'])) : '—'}</b></div>
+    </div>${unmarked}`;
+  $$('.lg-v').forEach(v => { const id = v.dataset.id; if (p.per) { const b = p.per[id] || 0; v.textContent = b > 0.5 ? fmtC(b) : 'закрыт ✓'; } else { const d = debtById(id); v.textContent = '—'; } });
+}
 function bindDebtChart() {
-  const svg = $('#dcSvg'), info = $('#dcInfo'), cur = $('#dcCur'); if (!svg || !debtChartCtx) return;
-  const { W, N, xs, ids, balAt, blAt, start, off } = debtChartCtx;
-  const def = info.innerHTML;
-  const reset = () => { cur.setAttribute('visibility', 'hidden'); info.innerHTML = def; $$('.lg-v').forEach(e => e.textContent = e.dataset.def); };
-  const show = (ev) => {
-    const rect = svg.getBoundingClientRect(); const x = (ev.clientX - rect.left) / rect.width * W;
-    let i = Math.round((x - xs(0)) / (xs(1) - xs(0) || 1)); i = Math.max(0, Math.min(N - 1, i));
-    cur.setAttribute('x1', xs(i)); cur.setAttribute('x2', xs(i)); cur.setAttribute('visibility', 'visible');
-    const m = ENG.addM(start, i); const pv = blAt(i);
-    if (i >= off) {
-      let tot = 0; const per = {}; for (const id of ids) { const b = balAt(id, i) || 0; per[id] = b; tot += b; }
-      info.innerHTML = `<b>${mName(m)}</b> · прогноз <b>${fmtC(tot)}</b>${pv != null ? ` · план ${fmtC(pv)}` : ''} <button type="button" class="btn tiny ghost" data-act="dc-reset">сейчас</button>`;
-      $$('.lg').forEach(btn => { const v = btn.querySelector('.lg-v'); const b = per[btn.dataset.id] || 0; v.textContent = b > 0.5 ? fmtC(b) : 'закрыт ✓'; });
-    } else info.innerHTML = `<b>${mName(m)}</b>${pv != null ? ` · план ${fmtC(pv)}` : ''} <button type="button" class="btn tiny ghost" data-act="dc-reset">сейчас</button>`;
-  };
-  svg.addEventListener('pointerdown', show); svg.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse') show(e); });
-  svg.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') reset(); });
-  info.addEventListener('click', (e) => { if (e.target.closest('[data-act=dc-reset]')) { e.stopPropagation(); reset(); } });
+  const svg = $('#dcSvg'); if (!svg || !tlCache) return; fillChartInfo();
+  const { W, slot, pl, N } = tlCache.geo;
+  const pick = (ev) => { const rect = svg.getBoundingClientRect(); const x = (ev.clientX - rect.left) / rect.width * W; const i = Math.max(0, Math.min(N - 1, Math.floor((x - pl) / slot))); if (i !== chartSel) { chartSel = i; const card = svg.closest('section'); const y = window.scrollY; card.querySelector('.dc-body').innerHTML = debtChartHTML(); window.scrollTo(0, y); bindDebtChart(); } };
+  svg.addEventListener('pointerdown', pick);
+  svg.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && e.buttons === 0) pick(e); });
 }
 function criticalAlerts() {
   const out = [];
@@ -1444,9 +1531,8 @@ function viewToday() {
     const paid = bl ? Math.max(0, bl.startTotal - totalDebt()) : 0;
     let delta = '';
     if (bl) { const cm = curMonth(); const k = ENG.diffM(bl.start, cm); const planBal = k <= 0 ? bl.startTotal : (bl.rows[k - 1] || {}).bal; if (planBal != null) { const dlt = planBal - totalDebt(); if (Math.abs(dlt) > 5000) delta = `<span class="${dlt > 0 ? 'pos' : 'neg'}">${dlt > 0 ? 'опережаете план на ' : 'отстаёте от плана на '}${fmtC(Math.abs(dlt))}</span>`; } }
-    dc = `<section class="card"><div class="row-between"><h2>Как тают долги</h2><span class="label">${fmtC(totalDebt())}</span></div>
-      ${debtChartHTML()}
-      <div class="kv"><div><span class="label">Без долгов</span><b>${F.payoff ? 'к ' + mDat(F.payoff) : 'не в этом горизонте'}</b></div><div><span class="label">Погашено</span><b>${bl ? fmtC(paid) + ' из ' + fmtC(bl.startTotal) : '—'}</b></div></div>
+    dc = `<section class="card"><div class="row-between"><h2>Как тают долги</h2><span class="label">без долгов ${F.payoff ? 'к ' + mDat(F.payoff) : '—'}</span></div>
+      <div class="dc-body">${debtChartHTML()}</div>
       <p class="sub" style="margin:8px 0 0">${target ? `Досрочно гасим: <b>${esc(debtName(target.id))}</b>${target.m !== curMonth() ? ` (с ${mGen(target.m)})` : ''}. ` : ''}${delta}</p></section>`;
   }
   const al = criticalAlerts();
@@ -1691,7 +1777,9 @@ document.addEventListener('click', async (e) => {
   const act = b.dataset.act, id = b.dataset.id;
   switch (act) {
     case 'quick-add': quickAdd(); break;
-    case 'chart-hi': chartHi = chartHi === id ? null : id; viewToday(); break;
+    case 'chart-hi': chartHi = chartHi === id ? null : id; rerenderChart(); break;
+    case 'chart-step': chartStep = b.dataset.s; localStorage.setItem('debtplan.chartStep', chartStep); chartSel = null; rerenderChart(); break;
+    case 'chart-now': chartSel = null; rerenderChart(); break;
     case 'import-statements': importStatements(); break;
     case 'ex-mode': exMode = b.dataset.m; exOff = 0; exAll = false; viewExpenses(); break;
     case 'ex-prev': exOff--; exAll = false; viewExpenses(); break;
@@ -1756,6 +1844,7 @@ document.addEventListener('change', (e) => {
   if (t.dataset.path && (t.type === 'checkbox' || t.tagName === 'SELECT')) { setPath(t.dataset.path, t.type === 'checkbox' ? t.checked : +t.value); persistNow(); renderAll(); }
   else if (t.dataset.path || t.dataset.lim || t.dataset.f || t.dataset.e) { persistNow(); renderAll(); }
 });
+function rerenderChart() { const b = $('.dc-body'); if (!b) return viewToday(); const y = window.scrollY; b.innerHTML = debtChartHTML(); window.scrollTo(0, y); bindDebtChart(); }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') renderAll(); });
 let rz = null; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (view === 'today') viewToday(); }, 250); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
