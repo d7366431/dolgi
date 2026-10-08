@@ -1770,6 +1770,15 @@ function applyPatch(o) {
   if (Array.isArray(o.ownContracts)) for (const c of o.ownContracts) if (!S.ownContracts.includes(c)) S.ownContracts.push(c);
   if (Array.isArray(o.fixedAdd)) for (const f of o.fixedAdd) { const ex = S.fixed.find(x => x.name === f.name); if (ex) Object.assign(ex, f); else S.fixed.push({ id: uid(), ...f }); }
   if (Array.isArray(o.limits) && o.limits.length) S.limits = o.limits;
+  if (Array.isArray(o.debtsAdd)) for (const d of o.debtsAdd) { if (S.debts.some(x => x.id === d.id || x.name === d.name)) continue; S.debts.push(Object.assign({ color: PAL[S.debts.length % PAL.length], status: 'active' }, d)); }
+  if (Array.isArray(o.debtsUpdate)) for (const u of o.debtsUpdate) { const d = S.debts.find(x => x.id === u.id); if (d) Object.assign(d, u.set || {}); }
+  if (Array.isArray(o.paymentsAdd)) for (const p of o.paymentsAdd) {
+    const d = debtById(p.debtId); if (!d) continue;
+    if (S.payments.some(x => x.debtId === p.debtId && Math.abs(x.amount - p.amount) < 1 && Math.abs(new Date(x.date) - new Date(p.date)) <= 3 * 864e5)) continue;
+    S.payments.push(Object.assign({ id: uid() }, p));
+    d.balance = Math.max(0, Math.round(((+d.balance || 0) - (+p.principal || 0)) * 100) / 100); d.balanceDate = p.date;
+  }
+  recordHistory();
   if (o.settings) Object.assign(S.settings, o.settings);
   S.settings.living = S.limits.reduce((a, l) => a + (+l.month || 0), 0);
   recategorizeAll();
