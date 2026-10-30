@@ -1775,6 +1775,11 @@ document.addEventListener('click', (e) => { const n = e.target.closest('[data-na
 function applyPatch(o) {
   const rep = [];
   S.appliedPatches = Array.isArray(S.appliedPatches) ? S.appliedPatches : [];
+  if (Array.isArray(o.parts)) {
+    for (const part of o.parts) rep.push(...(applyPatch(part) || []));
+    if (o.id && !S.appliedPatches.includes(o.id)) S.appliedPatches.push(o.id);
+    return rep;
+  }
   if (o.id && S.appliedPatches.includes(o.id)) return ['Это обновление уже было применено раньше — ничего не изменено.'];
   if (Array.isArray(o.eventsRemove)) for (const r of o.eventsRemove) { const re = new RegExp(r.match, 'i'); const gone = S.events.filter(e => re.test(e.note || '')); S.events = S.events.filter(e => !re.test(e.note || '')); rep.push(gone.length ? `Убрано из разовых трат: ${gone.map(e => '«' + (e.note || '') + '»').join(', ')}` : `Разовой траты «${r.label || r.match}» в бюджете не нашлось`); }
   if (Array.isArray(o.payees)) for (const p of o.payees) { S.payees = S.payees.filter(x => x.match !== p.match); S.payees.push(p); }
