@@ -1129,14 +1129,15 @@ async function importStatement(file) {
       const c = (n) => +b.querySelector(`[name=c_${n}]`).value;
       const src = b.querySelector('[name=src]').value.trim() || 'Выписка';
       if (c('date') < 0 || c('desc') < 0 || (c('amount') < 0 && c('out') < 0)) { $('#impErr2').textContent = 'Укажите хотя бы дату, сумму и описание.'; return false; }
-      const have = seenIds(), taken = new Set(), st = { added: 0, skipped: 0, replaced: 0 }; let added = 0, skipped = 0;
+      const have = seenIds(), taken = new Set(), st = { added: 0, skipped: 0, replaced: 0 }; let added = 0, skipped = 0; const occC = {};
       for (const r of rows.slice(hi + 1)) {
         const d = toISODate(r[c('date')]); if (!d) continue;
         if (c('status') >= 0 && /fail|отклон|отмен/i.test(String(r[c('status')]))) { skipped++; continue; }
         let a = c('amount') >= 0 ? parseNum(r[c('amount')]) : (-Math.abs(parseNum(r[c('out')])) + Math.abs(parseNum(c('inc') >= 0 ? r[c('inc')] : 0)));
         if (!a) continue;
         const desc = String(r[c('desc')] || '').trim(); const bcat = c('cat') >= 0 ? String(r[c('cat')] || '').trim() : '';
-        const id = (d + '|' + a.toFixed(2) + '|' + desc + '|' + src).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
+        const ckey = d + '|' + a.toFixed(2) + '|' + desc + '|' + src; occC[ckey] = (occC[ckey] || 0) + 1;
+        const id = (ckey + (occC[ckey] > 1 ? '|#' + occC[ckey] : '')).split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
         addStatementTx({ id, d, a: Math.round(a * 100) / 100, desc, bcat, src }, have, taken, st);
       }
       added = st.added; skipped += st.skipped; recategorizeAll(); afterTxImport(); persistNow(); renderAll(); toast(`Добавлено операций: ${added}${skipped ? `, пропущено: ${skipped}` : ''}${st.replaced ? `, заменено ручных: ${st.replaced}` : ''}`);
@@ -1185,6 +1186,7 @@ function catOf(t) {
 }
 function recategorizeAll() { for (const t of S.tx) if (!t.mc) { const r = catOf(t); t.cat = r.cat; } }
 function afterTxImport() {
+  for (const t of S.tx) delete t._new;
   // merge micro savings (round-ups) into one line per day per account
   const keep = [], agg = {};
   for (const t of S.tx) {
@@ -1219,12 +1221,13 @@ function findDuplicate(x, taken) {
 // returns 'skip' | 'replaced' | 'new'
 function addStatementTx(x, have, taken, stats) {
   if (have.has(x.id)) { stats.skipped++; return 'skip'; }
+  if (S.tx.some(c => !c._new && c.src === x.src && c.d === x.d && Math.abs(c.a - x.a) < 0.01 && c.desc === x.desc && (!c.t || !x.t || c.t === x.t) && (c.n || 1) === (x.n || 1))) { stats.skipped++; return 'skip'; }
   if (/инвесткопилк/i.test(x.desc)) { const agg = S.tx.find(t => t.agg && t.d === x.d && t.src === x.src); if (agg && !agg.parts) { stats.skipped++; return 'skip'; } }
   const dup = findDuplicate(x, taken);
   if (dup && !dup.manual) { taken.add(dup.c.id); stats.skipped++; return 'skip'; }
   if (dup && dup.manual) { taken.add(dup.c.id); S.tx = S.tx.filter(t => t.id !== dup.c.id); x.cat = dup.c.cat; x.mc = true; stats.replaced++; }
   else x.cat = catOf(x).cat;
-  S.tx.push(x); have.add(x.id); stats.added++; return dup ? 'replaced' : 'new';
+  x._new = true; S.tx.push(x); have.add(x.id); stats.added++; return dup ? 'replaced' : 'new';
 }
 const hash36 = (s) => s.split('').reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(36);
 
@@ -1285,9 +1288,13 @@ async function importStatements() {
       try {
         const r = await parseTbankPdf(lib, new Uint8Array(await readBuf(f)));
         if (r.contract && !S.ownContracts.includes(r.contract)) S.ownContracts.push(r.contract);
+        const occ = {};
         for (const t of r.tx) {
-          const id = hash36(t.d + '|' + t.a.toFixed(2) + '|' + t.desc + '|' + t.src + '|' + t.t);
-          addStatementTx({ id, d: t.d, t: t.t, a: Math.round(t.a * 100) / 100, desc: t.desc, src: t.src }, have, taken, st);
+          const key = t.d + '|' + t.a.toFixed(2) + '|' + t.desc + '|' + t.src + '|' + t.t;
+          occ[key] = (occ[key] || 0) + 1;
+          const id = hash36(key + (occ[key] > 1 ? '|#' + occ[key] : ''));
+          if (occ[key] > 1) t.n = occ[key];
+          addStatementTx({ id, d: t.d, t: t.t, n: t.n, a: Math.round(t.a * 100) / 100, desc: t.desc, src: t.src }, have, taken, st);
         }
       } catch (e) { fails.push(f.name); }
     }
@@ -1383,13 +1390,14 @@ function debtTimeline() {
     if (row && row.payTotal > 0) { const dd = +iso.slice(8, 10); let due = 0; for (const [id, v] of Object.entries(row.pay)) { const d = debtById(id); const pd = Math.min(+((d && (d.payDay || d.dueDay)) || 28), dim(m)); if (pd <= dd) due += v; } frac = dd >= dim(m) ? 1 : due / row.payTotal; }
     return prev + (end - prev) * frac;
   };
-  const factAt = (iso) => { let v = null; for (const h of S.history) if (h.d <= iso) v = h.t; return v; };
+  const planFrom = S.baseline && S.baseline.createdAt ? S.baseline.createdAt.slice(0, 10) : '';
+  const factAt = (iso) => { let v = null; for (const h of S.history) if (h.d <= iso && h.d >= planFrom) v = h.t; return v; };
   // point dates
   const pts = []; const lastM = F.payoff || F.months[F.months.length - 1].m;
   const end = lastM + '-' + String(dim(lastM)).padStart(2, '0');
   const step = chartStep === 'w' ? 7 : chartStep === '2w' ? 14 : 0;
   const sunday = (iso) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); return isoOf(d); };
-  const blStart = S.baseline ? S.baseline.start + '-01' : today;
+  const blStart = S.baseline && S.baseline.createdAt ? S.baseline.createdAt.slice(0, 10) : today;
   if (step) {
     let p = sunday(today); const past = [];
     for (let q = addDays(p, -step); q >= blStart && past.length < 8; q = addDays(q, -step)) past.unshift(q);
@@ -1471,7 +1479,7 @@ function fillChartInfo() {
   const paid = bl ? bl.startTotal - tot : null;
   const left = F.payoff ? Math.max(0, ENG.diffM(p.d.slice(0, 7), F.payoff)) : null;
   let unmarked = '';
-  if (p.now && F.months[0]) { const td = new Date().getDate(); const list = Object.keys(F.months[0].minPay).filter(id => { const d = debtById(id); return d && d.kind !== 'deadline' && (F.months[0].minPay[id] || 0) > 0.5 && Math.min(+(d.payDay || d.dueDay) || 28, dim(curMonth())) < td; }); if (list.length) unmarked = `<p class="small neg" style="margin:6px 0 0">Не отмечены прошедшие платежи: ${list.map(id => esc(debtName(id))).join(', ')}. Если вы их внесли, нажмите «Оплачено» в «Платежах» — план и факт сравняются.</p>`; }
+  if (p.now && F.months[0]) { const td = new Date().getDate(); const list = Object.keys(F.months[0].minPay).filter(id => { const d = debtById(id); return d && d.kind !== 'deadline' && (F.months[0].minPay[id] || 0) > 1500 && Math.min(+(d.payDay || d.dueDay) || 28, dim(curMonth())) < td; }); if (list.length) unmarked = `<p class="small neg" style="margin:6px 0 0">Не отмечены прошедшие платежи: ${list.map(id => esc(debtName(id))).join(', ')}. Если вы их внесли, нажмите «Оплачено» в «Платежах» — план и факт сравняются.</p>`; }
   el.innerHTML = `<div class="row-between"><b class="dc-date">${ptLabel(p)}</b>${chartSel !== tl.pts.findIndex(x => x.now) ? '<button type="button" class="btn tiny ghost" data-act="chart-now">к сегодня</button>' : ''}</div>
     <div class="dc-grid">
       <div><span class="label">Долг</span><b>${fmtC(tot)}</b>${ch != null && Math.abs(ch) >= 1 ? `<span class="small ${ch < 0 ? 'pos' : 'neg'}">${ch < 0 ? '−' : '+'}${fmtC(Math.abs(ch))} ${per}</span>` : ''}</div>
@@ -1765,24 +1773,46 @@ document.addEventListener('click', (e) => { const n = e.target.closest('[data-na
 
 // ---------- patch import (merge, not replace) ----------
 function applyPatch(o) {
+  const rep = [];
+  S.appliedPatches = Array.isArray(S.appliedPatches) ? S.appliedPatches : [];
+  if (o.id && S.appliedPatches.includes(o.id)) return ['Это обновление уже было применено раньше — ничего не изменено.'];
+  if (Array.isArray(o.eventsRemove)) for (const r of o.eventsRemove) { const re = new RegExp(r.match, 'i'); const gone = S.events.filter(e => re.test(e.note || '')); S.events = S.events.filter(e => !re.test(e.note || '')); rep.push(gone.length ? `Убрано из разовых трат: ${gone.map(e => '«' + (e.note || '') + '»').join(', ')}` : `Разовой траты «${r.label || r.match}» в бюджете не нашлось`); }
   if (Array.isArray(o.payees)) for (const p of o.payees) { S.payees = S.payees.filter(x => x.match !== p.match); S.payees.push(p); }
   if (Array.isArray(o.rules)) for (const r of o.rules.slice().reverse()) { S.rules = S.rules.filter(x => x.k !== r.k); S.rules.unshift(r); }
   if (Array.isArray(o.ownContracts)) for (const c of o.ownContracts) if (!S.ownContracts.includes(c)) S.ownContracts.push(c);
   if (Array.isArray(o.fixedAdd)) for (const f of o.fixedAdd) { const ex = S.fixed.find(x => x.name === f.name); if (ex) Object.assign(ex, f); else S.fixed.push({ id: uid(), ...f }); }
   if (Array.isArray(o.limits) && o.limits.length) S.limits = o.limits;
   if (Array.isArray(o.debtsAdd)) for (const d of o.debtsAdd) { if (S.debts.some(x => x.id === d.id || x.name === d.name)) continue; S.debts.push(Object.assign({ color: PAL[S.debts.length % PAL.length], status: 'active' }, d)); }
-  if (Array.isArray(o.debtsUpdate)) for (const u of o.debtsUpdate) { const d = S.debts.find(x => x.id === u.id); if (d) Object.assign(d, u.set || {}); }
-  if (Array.isArray(o.paymentsAdd)) for (const p of o.paymentsAdd) {
-    const d = debtById(p.debtId); if (!d) continue;
-    if (S.payments.some(x => x.debtId === p.debtId && Math.abs(x.amount - p.amount) < 1 && Math.abs(new Date(x.date) - new Date(p.date)) <= 3 * 864e5)) continue;
-    S.payments.push(Object.assign({ id: uid() }, p));
-    d.balance = Math.max(0, Math.round(((+d.balance || 0) - (+p.principal || 0)) * 100) / 100); d.balanceDate = p.date;
+  if (Array.isArray(o.debtsUpdate)) for (const u of o.debtsUpdate) {
+    const d = S.debts.find(x => x.id === u.id); if (!d) continue;
+    if (u.set) Object.assign(d, u.set);
+    if (u.add) { d.balance = Math.round(((+d.balance || 0) + (+u.add)) * 100) / 100; if (d.status === 'closed') { d.status = 'active'; delete d.closedAt; } rep.push(`«${d.name}»: долг увеличен на ${fmt(u.add)}${u.why ? ' — ' + u.why : ''}`); }
   }
+  if (Array.isArray(o.paymentsAdd)) for (const p of o.paymentsAdd.slice().sort((a, b) => a.date < b.date ? -1 : 1)) {
+    const d = debtById(p.debtId); if (!d) continue;
+    const m = p.date.slice(0, 7);
+    const twin = S.payments.find(x => x.debtId === p.debtId && x.date.slice(0, 7) === m && Math.abs(x.amount - p.amount) <= Math.max(1, p.amount * 0.15));
+    if (twin) { rep.push(`«${d.name}»: платёж ${fmt(p.amount)} уже отмечен (${dText(twin.date)}) — пропущен`); continue; }
+    const principal = p.principal == null || p.principal === 'auto' ? estPrincipal(d, p.amount, p.date) : +p.principal;
+    S.payments.push(Object.assign({ id: uid() }, p, { principal: Math.round(Math.min(principal, +d.balance || 0) * 100) / 100 }));
+    d.balance = Math.max(0, Math.round(((+d.balance || 0) - principal) * 100) / 100); d.balanceDate = p.date;
+    if (d.balance <= 0.5) { d.balance = 0; d.status = 'closed'; d.closedAt = p.date; }
+    rep.push(`«${d.name}»: платёж ${fmt(p.amount)} от ${dText(p.date)}`);
+  }
+  if (Array.isArray(o.payrollAdd) && o.payrollAdd.length) {
+    for (const r of o.payrollAdd) { S.payroll = S.payroll.filter(x => x.m !== r.m); S.payroll.push(r); rep.push(`Зарплата за ${mName(r.m)}: ${r.partial ? 'неполная расчётка, ' : ''}на руки ${fmt(r.net)}`); }
+    S.payroll.sort((a, b) => a.m < b.m ? -1 : 1);
+    const full = S.payroll.filter(r => !r.partial);
+    if (full.length) { const L = full[full.length - 1], y = L.m.slice(0, 4); const rk = full.filter(r => r.m.slice(0, 4) === y).reduce((a, r) => a + (r.trk || 0), 0); const all = L.ytdInc || full.filter(r => r.m.slice(0, 4) === y).reduce((a, r) => a + (r.tb || 0) + (r.trk || 0), 0); S.salary.ytdMonth = L.m; S.salary.ytdRk = rk; S.salary.ytdBase = Math.max(0, all - rk); }
+  }
+  if (o.salary) Object.assign(S.salary, o.salary);
   recordHistory();
   if (o.settings) Object.assign(S.settings, o.settings);
   S.settings.living = S.limits.reduce((a, l) => a + (+l.month || 0), 0);
   recategorizeAll();
   if (o.resetBaseline) { pickStrategy(); makeBaseline(); }
+  if (o.id) S.appliedPatches.push(o.id);
+  return rep;
 }
 
 // ---------- events ----------
@@ -1837,7 +1867,7 @@ document.addEventListener('click', async (e) => {
     case 'import': {
       const files = await pickFiles('.json,application/json', false); if (!files.length) break;
       let o; try { o = JSON.parse(new TextDecoder().decode(await readBuf(files[0]))); } catch (x) { toast('Не удалось прочитать файл'); break; }
-      if (o && o.patch) { openDialog(`<h3>Применить обновление?</h3><p class="sub" style="margin:0">${esc(o.title || 'Настройки будут добавлены к вашим данным. Кредиты, платежи и операции не изменятся.')}</p>`, `<button class="btn ghost" value="cancel">Отмена</button><button class="btn primary" value="ok">Применить</button>`, () => { applyPatch(o); persistNow(); renderAll(); toast('Обновление применено'); }); break; }
+      if (o && o.patch) { openDialog(`<h3>Применить обновление?</h3><p class="sub" style="margin:0">${esc(o.title || 'Настройки будут добавлены к вашим данным. Кредиты, платежи и операции не изменятся.')}</p>`, `<button class="btn ghost" value="cancel">Отмена</button><button class="btn primary" value="ok">Применить</button>`, () => { const rep = applyPatch(o) || []; persistNow(); renderAll(); setTimeout(() => openDialog(`<h3>Обновление применено</h3>${rep.length ? `<ul class="notes">${rep.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}`, `<button class="btn primary" value="cancel">Готово</button>`), 60); }); break; }
       if (!o || !Array.isArray(o.debts)) { toast('Это не файл копии этого приложения'); break; }
       openDialog(`<h3>Заменить все данные?</h3><p class="sub" style="margin:0">Данные на этом устройстве${session ? ' и в облаке' : ''} заменятся данными из файла.</p>`, `<button class="btn ghost" value="cancel">Отмена</button><button class="btn primary" value="ok">Заменить</button>`, () => { S = normalize(o); recordHistory(); persistNow(); renderAll(); toast('Данные загружены'); });
       break;
