@@ -1343,7 +1343,7 @@ function extraTarget() { for (const r of F.months) { const e = Object.entries(r.
 // ---------- small UI helpers ----------
 const bar = (v, max, color) => `<div class="bar"><i style="width:${Math.max(0, Math.min(100, max > 0 ? v / max * 100 : 0))}%;background:${color}"></i></div>`;
 const shortDate = (iso) => { const [y, m, d] = iso.split('-').map(Number); return `${d} ${MS[m - 1]}`; };
-let chartHi = null, chartSel = null;
+let chartHi = null, chartSel = null, chartSelD = null;
 let chartStep = localStorage.getItem('debtplan.chartStep') || '2w';
 // ---- discrete debt timeline: balances per debt at chosen dates (week / 2 weeks / month ends) ----
 const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return isoOf(d); };
@@ -1429,7 +1429,7 @@ function debtChartHTML() {
   const { pts, ids } = tl;
   const order = ids.slice().sort((a, b) => (F.payoffBy[b] || '9999') < (F.payoffBy[a] || '9999') ? -1 : 1);
   tl.order = order;
-  const nowIdx = pts.findIndex(p => p.now); if (chartSel == null || chartSel >= pts.length) chartSel = nowIdx;
+  const nowIdx = pts.findIndex(p => p.now); { const k = chartSelD ? pts.findIndex(p => p.d === chartSelD && !p.now) : -1; chartSel = k >= 0 ? k : nowIdx; }
   const cw = Math.max(300, Math.min(720, (document.documentElement.clientWidth || 400) - 60));
   const W = Math.round(cw), H = W < 500 ? 220 : 280, pl = 40, pr = 6, pt = 12, pb = 24;
   const N = pts.length, maxV = Math.max(1, ...pts.map(p => Math.max(p.total || 0, p.plan || 0, p.fact || 0))) * 1.06;
@@ -1489,10 +1489,11 @@ function fillChartInfo() {
     </div>${unmarked}`;
   $$('.lg-v').forEach(v => { const id = v.dataset.id; if (p.per) { const b = p.per[id] || 0; v.textContent = b > 0.5 ? fmtC(b) : 'закрыт ✓'; } else { const d = debtById(id); v.textContent = '—'; } });
 }
+const pts_d = (i) => tlCache && tlCache.pts[i] ? (tlCache.pts[i].now ? null : tlCache.pts[i].d) : null;
 function bindDebtChart() {
   const svg = $('#dcSvg'); if (!svg || !tlCache) return; fillChartInfo();
   const { W, slot, pl, N } = tlCache.geo;
-  const pick = (ev) => { const rect = svg.getBoundingClientRect(); const x = (ev.clientX - rect.left) / rect.width * W; const i = Math.max(0, Math.min(N - 1, Math.floor((x - pl) / slot))); if (i !== chartSel) { chartSel = i; const card = svg.closest('section'); const y = window.scrollY; card.querySelector('.dc-body').innerHTML = debtChartHTML(); window.scrollTo(0, y); bindDebtChart(); } };
+  const pick = (ev) => { const rect = svg.getBoundingClientRect(); const x = (ev.clientX - rect.left) / rect.width * W; const i = Math.max(0, Math.min(N - 1, Math.floor((x - pl) / slot))); if (i !== chartSel) { chartSel = i; chartSelD = pts_d(i); const card = svg.closest('section'); const y = window.scrollY; card.querySelector('.dc-body').innerHTML = debtChartHTML(); window.scrollTo(0, y); bindDebtChart(); } };
   svg.addEventListener('pointerdown', pick);
   svg.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && e.buttons === 0) pick(e); });
 }
@@ -1828,8 +1829,8 @@ document.addEventListener('click', async (e) => {
   switch (act) {
     case 'quick-add': quickAdd(); break;
     case 'chart-hi': chartHi = chartHi === id ? null : id; rerenderChart(); break;
-    case 'chart-step': chartStep = b.dataset.s; localStorage.setItem('debtplan.chartStep', chartStep); chartSel = null; rerenderChart(); break;
-    case 'chart-now': chartSel = null; rerenderChart(); break;
+    case 'chart-step': chartStep = b.dataset.s; localStorage.setItem('debtplan.chartStep', chartStep); chartSel = null; chartSelD = null; rerenderChart(); break;
+    case 'chart-now': chartSel = null; chartSelD = null; rerenderChart(); break;
     case 'import-statements': importStatements(); break;
     case 'ex-mode': exMode = b.dataset.m; exOff = 0; exAll = false; viewExpenses(); break;
     case 'ex-prev': exOff--; exAll = false; viewExpenses(); break;
